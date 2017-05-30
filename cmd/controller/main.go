@@ -2,7 +2,6 @@ package main
 
 import (
 	goflag "flag"
-	"fmt"
 	"time"
 
 	"github.com/docker/machine/libmachine/log"
@@ -10,9 +9,12 @@ import (
 	"github.com/golang/glog"
 	"github.com/kube-node/kube-machine/pkg/controller/node"
 	"github.com/kube-node/kube-machine/pkg/libmachine"
+	"github.com/kube-node/nodeset/pkg/client/clientset_v1alpha1"
+	"github.com/kube-node/nodeset/pkg/nodeset/v1alpha1"
 	flag "github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
@@ -46,10 +48,12 @@ func main() {
 		}
 	}
 	client := kubernetes.NewForConfigOrDie(config)
+	config.GroupVersion = &schema.GroupVersion{Version: runtime.APIVersionInternal}
+	nodesetClient := clientset_v1alpha1.NewForConfigOrDie(config)
 
-	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	nodeQueue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
-	indexer, informer := cache.NewIndexerInformer(
+	nodeIndexer, nodeInformer := cache.NewIndexerInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
 				options.LabelSelector = "node.k8s.io/controller=kube-machine"
@@ -66,33 +70,55 @@ func main() {
 			AddFunc: func(obj interface{}) {
 				key, err := cache.MetaNamespaceKeyFunc(obj)
 				if err == nil {
-					queue.Add(key)
+					nodeQueue.Add(key)
 				}
 			},
 			UpdateFunc: func(old interface{}, new interface{}) {
 				key, err := cache.MetaNamespaceKeyFunc(new)
 				if err == nil {
-					queue.Add(key)
+					nodeQueue.Add(key)
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
-				// IndexerInformer uses a delta queue, therefore for deletes we have to use this
+				// IndexerInformer uses a delta nodeQueue, therefore for deletes we have to use this
 				// key function.
 				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 				if err == nil {
-					queue.Add(key)
+					nodeQueue.Add(key)
 				}
 			},
 		},
 		cache.Indexers{},
 	)
+
+	nodeClassStore, nodeClassController := cache.NewInformer(
+		&cache.ListWatch{
+			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
+				return nodesetClient.NodeClasses().List(options)
+			},
+			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
+				return nodesetClient.NodeClasses().Watch(options)
+			},
+		},
+		&v1alpha1.NodeClass{},
+		5*time.Minute,
+		cache.ResourceEventHandlerFuncs{},
+	)
+
 	//Is default on docker-machine. Lets stick to defaults.
 	ssh.SetDefaultClient(ssh.External)
 
 	api := libmachine.New()
+	defer api.Close()
 
-	controller := node.New(queue, indexer, informer, api)
-	fmt.Printf("%v", controller)
+	controller := node.New(
+		client,
+		nodeQueue,
+		nodeIndexer,
+		nodeInformer,
+		nodeClassStore,
+		nodeClassController,
+		api)
 
 	stop := make(chan struct{})
 	defer close(stop)

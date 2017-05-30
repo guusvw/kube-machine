@@ -17,6 +17,7 @@ import (
 	"github.com/docker/machine/libmachine/persist"
 	"github.com/docker/machine/libmachine/provision"
 	"github.com/docker/machine/libmachine/state"
+	"github.com/docker/machine/libmachine/swarm"
 	"github.com/docker/machine/libmachine/version"
 )
 
@@ -52,6 +53,7 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 				StorageDriver: "aufs",
 				TLSVerify:     true,
 			},
+			SwarmOptions: &swarm.Options{},
 		},
 	}, nil
 }

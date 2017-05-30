@@ -1,15 +1,24 @@
 package node
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/docker/machine/libmachine"
+	"github.com/docker/machine/libmachine/drivers"
+	"github.com/docker/machine/libmachine/host"
 	"github.com/golang/glog"
 	"github.com/kube-node/kube-machine/pkg/controller"
+	"github.com/kube-node/kube-machine/pkg/nodeclass"
+	"github.com/kube-node/kube-machine/pkg/options"
+	"github.com/kube-node/nodeset/pkg/nodeset/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
@@ -18,44 +27,98 @@ import (
 // Mostly from https://github.com/rmohr/kubernetes/blob/b39b3ba01675828c13bc0dea67d5114b4c225644/staging/src/k8s.io/client-go/examples/workqueue/main.go
 
 type Controller struct {
-	informer cache.Controller
-	indexer  cache.Indexer
-	queue    workqueue.RateLimitingInterface
-	mapi     libmachine.API
+	nodeInformer      cache.Controller
+	nodeIndexer       cache.Indexer
+	nodeQueue         workqueue.RateLimitingInterface
+	nodeClassStore    cache.Store
+	nodeClassInformer cache.Controller
+	mapi              libmachine.API
+	client            *kubernetes.Clientset
 }
 
+const (
+	nodeClassAnnotationKey  = "node.k8s.io/node-class"
+	driverDataAnnotationKey = "node.k8s.io/driver-data"
+)
+
 func New(
+	client *kubernetes.Clientset,
 	queue workqueue.RateLimitingInterface,
-	indexer cache.Indexer,
-	informer cache.Controller,
+	nodeIndexer cache.Indexer,
+	nodeInformer cache.Controller,
+	nodeClassStore cache.Store,
+	nodeClassController cache.Controller,
 	mapi libmachine.API,
 ) controller.Interface {
 	return &Controller{
-		informer: informer,
-		indexer:  indexer,
-		queue:    queue,
-		mapi:     mapi,
+		nodeInformer:      nodeInformer,
+		nodeIndexer:       nodeIndexer,
+		nodeQueue:         queue,
+		nodeClassInformer: nodeClassController,
+		nodeClassStore:    nodeClassStore,
+		mapi:              mapi,
+		client:            client,
 	}
 }
 
 func (c *Controller) processNextItem() bool {
-	// Wait until there is a new item in the working queue
-	key, quit := c.queue.Get()
+	// Wait until there is a new item in the working nodeQueue
+	key, quit := c.nodeQueue.Get()
 	if quit {
 		return false
 	}
 
-	defer c.queue.Done(key)
+	defer c.nodeQueue.Done(key)
 
 	// Invoke the method containing the business logic
-	err := c.syncToStdout(key.(string))
+	err := c.syncNode(key.(string))
 	// Handle the error if something went wrong during the execution of the business logic
 	c.handleErr(err, key)
 	return true
 }
 
-func (c *Controller) syncToStdout(key string) error {
-	obj, exists, err := c.indexer.GetByKey(key)
+func (c *Controller) createNode(node *v1.Node) (*host.Host, error) {
+	nodeClass := node.Annotations[nodeClassAnnotationKey]
+	ncobj, exists, err := c.nodeClassStore.GetByKey("default/" + nodeClass)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch nodeclass from store: %v", err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("nodeclass %q for node %q not found", nodeClass, node.GetName())
+	}
+
+	class := ncobj.(*v1alpha1.NodeClass)
+	var config nodeclass.NodeClassConfig
+	err = json.Unmarshal(class.Config.Raw, &config)
+	if err != nil {
+		return nil, fmt.Errorf("failed parsing config from nodeclass %q: %v", nodeClass, err)
+	}
+
+	rawDriver, err := json.Marshal(&drivers.BaseDriver{MachineName: node.Name})
+	if err != nil {
+		return nil, fmt.Errorf("error attempting to marshal bare driver data: %s", err)
+	}
+
+	mhost, err := c.mapi.NewHost(config.Provider, rawDriver)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create docker machine host for node %q: %v", node.Name, err)
+	}
+
+	opts := options.New(config.DockerMachineFlags)
+	mcnFlags := mhost.Driver.GetCreateFlags()
+	driverOpts := options.GetDriverOpts(opts, mcnFlags, class.Resources)
+
+	mhost.Driver.SetConfigFromFlags(driverOpts)
+	err = c.mapi.Create(mhost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create node %q on cloud provider: %v", node.Name, err)
+	}
+
+	return mhost, nil
+}
+
+func (c *Controller) syncNode(key string) error {
+	nobj, exists, err := c.nodeIndexer.GetByKey(key)
 	if err != nil {
 		glog.Errorf("Fetching object with key %s from store failed with %v", key, err)
 		return err
@@ -63,9 +126,26 @@ func (c *Controller) syncToStdout(key string) error {
 
 	if !exists {
 		glog.Infof("Node %s does not exist anymore\n", key)
-	} else {
-		fmt.Printf("Sync/Add/Update for Node %s\n", obj.(*v1.Node).GetName())
+		return nil
 	}
+	node := nobj.(*v1.Node)
+	glog.V(4).Infof("Processing Node %s\n", node.GetName())
+
+	if node.Annotations[driverDataAnnotationKey] == "" {
+		mhost, err := c.createNode(node)
+		if err != nil {
+			return fmt.Errorf("failed creating node %q: %v", node.Name, err)
+		}
+		data, err := json.Marshal(mhost)
+		if err != nil {
+			return err
+		}
+		patchData := []byte(fmt.Sprintf(`
+{"metadata": {"annotations": {"%s": %s}}}"
+		`, driverDataAnnotationKey, strconv.Quote(string(data))))
+		node, err = c.client.Nodes().Patch(node.Name, types.StrategicMergePatchType, patchData)
+	}
+
 	return nil
 }
 
@@ -75,37 +155,38 @@ func (c *Controller) handleErr(err error, key interface{}) {
 		// Forget about the #AddRateLimited history of the key on every successful synchronization.
 		// This ensures that future processing of updates for this key is not delayed because of
 		// an outdated error history.
-		c.queue.Forget(key)
+		c.nodeQueue.Forget(key)
 		return
 	}
 
 	// This controller retries 5 times if something goes wrong. After that, it stops trying.
-	if c.queue.NumRequeues(key) < 5 {
+	if c.nodeQueue.NumRequeues(key) < 5 {
 		glog.Infof("Error syncing node %v: %v", key, err)
 
 		// Re-enqueue the key rate limited. Based on the rate limiter on the
-		// queue and the re-enqueue history, the key will be processed later again.
-		c.queue.AddRateLimited(key)
+		// nodeQueue and the re-enqueue history, the key will be processed later again.
+		c.nodeQueue.AddRateLimited(key)
 		return
 	}
 
-	c.queue.Forget(key)
+	c.nodeQueue.Forget(key)
 	// Report to an external entity that, even after several retries, we could not successfully process this key
 	runtime.HandleError(err)
-	glog.Infof("Dropping nonde %q out of the queue: %v", key, err)
+	glog.Infof("Dropping node %q out of the queue: %v", key, err)
 }
 
 func (c *Controller) Run(workerCount int, stopCh chan struct{}) {
 	defer runtime.HandleCrash()
 
 	// Let the workers stop when we are done
-	defer c.queue.ShutDown()
+	defer c.nodeQueue.ShutDown()
 	glog.Info("Starting Node controller")
 
-	go c.informer.Run(stopCh)
+	go c.nodeInformer.Run(stopCh)
+	go c.nodeClassInformer.Run(stopCh)
 
-	// Wait for all involved caches to be synced, before processing items from the queue is started
-	if !cache.WaitForCacheSync(stopCh, c.informer.HasSynced) {
+	// Wait for all involved caches to be synced, before processing items from the nodeQueue is started
+	if !cache.WaitForCacheSync(stopCh, c.nodeInformer.HasSynced, c.nodeClassInformer.HasSynced) {
 		runtime.HandleError(errors.New("timed out waiting for caches to sync"))
 		return
 	}
