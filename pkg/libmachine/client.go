@@ -3,32 +3,32 @@ package libmachine
 import (
 	"fmt"
 
-	"github.com/docker/machine/drivers/errdriver"
-	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/auth"
 	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/drivers/plugin/localbinary"
 	"github.com/docker/machine/libmachine/drivers/rpc"
 	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/host"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnerror"
 	"github.com/docker/machine/libmachine/mcnutils"
-	"github.com/docker/machine/libmachine/persist"
-	"github.com/docker/machine/libmachine/provision"
 	"github.com/docker/machine/libmachine/state"
 	"github.com/docker/machine/libmachine/swarm"
 	"github.com/docker/machine/libmachine/version"
+	"github.com/kube-node/kube-machine/pkg/nodeclass"
+	"github.com/kube-node/kube-machine/pkg/provision"
+	"k8s.io/client-go/pkg/api/v1"
+)
+
+const (
+	driverDataAnnotationKey = "node.k8s.io/driver-data"
 )
 
 type Client struct {
-	*persist.Filestore
 	clientDriverFactory rpcdriver.RPCClientDriverFactory
 }
 
-func New() libmachine.API {
+func New() *Client {
 	return &Client{
-		Filestore:           persist.NewFilestore("", "", ""),
 		clientDriverFactory: rpcdriver.NewRPCClientDriverFactory(),
 	}
 }
@@ -58,34 +58,27 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 	}, nil
 }
 
-func (api *Client) Load(name string) (*host.Host, error) {
-	h, err := api.Filestore.Load(name)
+func (api *Client) Load(node v1.Node) (*host.Host, bool, error) {
+	data := node.Annotations[driverDataAnnotationKey]
+
+	h := &host.Host{
+		Name: node.Name,
+	}
+
+	migratedHost, migrated, err := host.MigrateHost(h, []byte(data))
 	if err != nil {
-		return nil, err
+		return nil, false, fmt.Errorf("error getting migrating host: %s", err)
 	}
 
-	d, err := api.clientDriverFactory.NewRPCClientDriver(h.DriverName, h.RawDriver)
-	if err != nil {
-		// Not being able to find a driver binary is a "known error"
-		if _, ok := err.(localbinary.ErrPluginBinaryNotFound); ok {
-			h.Driver = errdriver.NewDriver(h.DriverName)
-			return h, nil
-		}
-		return nil, err
-	}
+	*h = *migratedHost
+	h.Name = node.Name
 
-	if h.DriverName == "virtualbox" {
-		h.Driver = drivers.NewSerialDriver(d)
-	} else {
-		h.Driver = d
-	}
-
-	return h, nil
+	return h, migrated, nil
 }
 
 // Create is the wrapper method which covers all of the boilerplate around
 // actually creating, provisioning, and persisting an instance in the store.
-func (api *Client) Create(h *host.Host) error {
+func (api *Client) Create(h *host.Host, config *nodeclass.NodeClassConfig) error {
 	log.Info("Running pre-create checks...")
 
 	if err := h.Driver.PreCreateCheck(); err != nil {
@@ -94,13 +87,9 @@ func (api *Client) Create(h *host.Host) error {
 		}
 	}
 
-	if err := api.Save(h); err != nil {
-		return fmt.Errorf("Error saving host to store before attempting creation: %s", err)
-	}
-
 	log.Info("Creating machine...")
 
-	if err := api.performCreate(h); err != nil {
+	if err := api.performCreate(h, config); err != nil {
 		return fmt.Errorf("Error creating machine: %s", err)
 	}
 
@@ -109,18 +98,9 @@ func (api *Client) Create(h *host.Host) error {
 	return nil
 }
 
-func (api *Client) performCreate(h *host.Host) error {
+func (api *Client) performCreate(h *host.Host, config *nodeclass.NodeClassConfig) error {
 	if err := h.Driver.Create(); err != nil {
 		return fmt.Errorf("Error in driver during machine creation: %s", err)
-	}
-
-	if err := api.Save(h); err != nil {
-		return fmt.Errorf("Error saving host to store after attempting creation: %s", err)
-	}
-
-	// TODO: Not really a fan of just checking "none" or "ci-test" here.
-	if h.Driver.DriverName() == "none" || h.Driver.DriverName() == "ci-test" {
-		return nil
 	}
 
 	log.Info("Waiting for machine to be running, this may take a few minutes...")
@@ -129,7 +109,8 @@ func (api *Client) performCreate(h *host.Host) error {
 	}
 
 	log.Info("Detecting operating system of created instance...")
-	provisioner, err := provision.DetectProvisioner(h.Driver)
+
+	provisioner, err := detector.DetectProvisioner(h.Driver)
 	if err != nil {
 		return fmt.Errorf("Error detecting OS: %s", err)
 	}
@@ -139,7 +120,11 @@ func (api *Client) performCreate(h *host.Host) error {
 		return fmt.Errorf("Error running provisioning: %s", err)
 	}
 
-	//log.Info("Docker is up and running!")
+	log.Info("Provisioning with kube-machine provisioner...")
+	if err := provisioner.ProvisionConfig(config); err != nil {
+		return fmt.Errorf("Error running provisioning: %s", err)
+	}
+
 	log.Info("Node is up and running!")
 	return nil
 }

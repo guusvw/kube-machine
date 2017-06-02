@@ -7,11 +7,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/host"
 	"github.com/golang/glog"
 	"github.com/kube-node/kube-machine/pkg/controller"
+	"github.com/kube-node/kube-machine/pkg/libmachine"
 	"github.com/kube-node/kube-machine/pkg/nodeclass"
 	"github.com/kube-node/kube-machine/pkg/options"
 	"github.com/kube-node/nodeset/pkg/nodeset/v1alpha1"
@@ -32,7 +32,7 @@ type Controller struct {
 	nodeQueue         workqueue.RateLimitingInterface
 	nodeClassStore    cache.Store
 	nodeClassInformer cache.Controller
-	mapi              libmachine.API
+	mapi              *libmachine.Client
 	client            *kubernetes.Clientset
 }
 
@@ -48,7 +48,7 @@ func New(
 	nodeInformer cache.Controller,
 	nodeClassStore cache.Store,
 	nodeClassController cache.Controller,
-	mapi libmachine.API,
+	mapi *libmachine.Client,
 ) controller.Interface {
 	return &Controller{
 		nodeInformer:      nodeInformer,
@@ -109,8 +109,9 @@ func (c *Controller) createNode(node *v1.Node) (*host.Host, error) {
 	driverOpts := options.GetDriverOpts(opts, mcnFlags, class.Resources)
 
 	mhost.Driver.SetConfigFromFlags(driverOpts)
-	err = c.mapi.Create(mhost)
+	err = c.mapi.Create(mhost, &config)
 	if err != nil {
+		mhost.Driver.Remove()
 		return nil, fmt.Errorf("failed to create node %q on cloud provider: %v", node.Name, err)
 	}
 
@@ -128,6 +129,7 @@ func (c *Controller) syncNode(key string) error {
 		glog.Infof("Node %s does not exist anymore\n", key)
 		return nil
 	}
+
 	node := nobj.(*v1.Node)
 	glog.V(4).Infof("Processing Node %s\n", node.GetName())
 
