@@ -146,6 +146,7 @@ func (c *Controller) syncNode(key string) error {
 {"metadata": {"annotations": {"%s": %s}}}"
 		`, driverDataAnnotationKey, strconv.Quote(string(data))))
 		node, err = c.client.Nodes().Patch(node.Name, types.StrategicMergePatchType, patchData)
+		c.nodeIndexer.Update(node)
 	}
 
 	return nil
