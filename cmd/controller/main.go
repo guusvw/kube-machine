@@ -122,7 +122,7 @@ func main() {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	go controller.Run(1, stop)
+	go controller.Run(4, stop)
 
 	// Wait forever
 	select {}

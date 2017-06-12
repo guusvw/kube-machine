@@ -2,9 +2,13 @@ package libmachine
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/docker/machine/drivers/errdriver"
 	"github.com/docker/machine/libmachine/auth"
 	"github.com/docker/machine/libmachine/drivers"
+	"github.com/docker/machine/libmachine/drivers/plugin/localbinary"
 	"github.com/docker/machine/libmachine/drivers/rpc"
 	"github.com/docker/machine/libmachine/engine"
 	"github.com/docker/machine/libmachine/host"
@@ -39,6 +43,13 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 		return nil, err
 	}
 
+	//Initially create filesystem structure - needed otherwise we would need to patch the basedriver
+	// which would make every external driver incompatible
+	err = os.MkdirAll(filepath.Join(".", "machines", driver.GetMachineName()), 0755)
+	if err != nil {
+		return nil, err
+	}
+
 	return &host.Host{
 		ConfigVersion: version.ConfigVersion,
 		Name:          driver.GetMachineName(),
@@ -58,22 +69,38 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 	}, nil
 }
 
-func (api *Client) Load(node v1.Node) (*host.Host, bool, error) {
+func (api *Client) Load(node *v1.Node) (*host.Host, error) {
 	data := node.Annotations[driverDataAnnotationKey]
 
 	h := &host.Host{
 		Name: node.Name,
 	}
 
-	migratedHost, migrated, err := host.MigrateHost(h, []byte(data))
+	migratedHost, _, err := host.MigrateHost(h, []byte(data))
 	if err != nil {
-		return nil, false, fmt.Errorf("error getting migrating host: %s", err)
+		return nil, fmt.Errorf("error getting migrating host: %s", err)
 	}
 
 	*h = *migratedHost
 	h.Name = node.Name
 
-	return h, migrated, nil
+	d, err := api.clientDriverFactory.NewRPCClientDriver(h.DriverName, h.RawDriver)
+	if err != nil {
+		// Not being able to find a driver binary is a "known error"
+		if _, ok := err.(localbinary.ErrPluginBinaryNotFound); ok {
+			h.Driver = errdriver.NewDriver(h.DriverName)
+			return h, nil
+		}
+		return nil, err
+	}
+
+	if h.DriverName == "virtualbox" {
+		h.Driver = drivers.NewSerialDriver(d)
+	} else {
+		h.Driver = d
+	}
+
+	return h, nil
 }
 
 // Create is the wrapper method which covers all of the boilerplate around

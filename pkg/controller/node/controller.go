@@ -39,6 +39,8 @@ type Controller struct {
 const (
 	nodeClassAnnotationKey  = "node.k8s.io/node-class"
 	driverDataAnnotationKey = "node.k8s.io/driver-data"
+	noExecuteTaintKey       = "node.k8s.io/not-up"
+	deleteFinalizerName     = "node.k8s.io/delete"
 )
 
 func New(
@@ -75,6 +77,15 @@ func (c *Controller) processNextItem() bool {
 	// Handle the error if something went wrong during the execution of the business logic
 	c.handleErr(err, key)
 	return true
+}
+
+func (c *Controller) deleteNode(node *v1.Node) error {
+	h, err := c.mapi.Load(node)
+	if err != nil {
+		return err
+	}
+
+	return h.Driver.Remove()
 }
 
 func (c *Controller) createNode(node *v1.Node) (*host.Host, error) {
@@ -118,6 +129,40 @@ func (c *Controller) createNode(node *v1.Node) (*host.Host, error) {
 	return mhost, nil
 }
 
+func nodeHasNoScheduleTaint(n *v1.Node) bool {
+	for _, t := range n.Spec.Taints {
+		if t.Key == noExecuteTaintKey {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeHasJoined(n *v1.Node) bool {
+	for _, c := range n.Status.Conditions {
+		if c.Reason == "NodeStatusNeverUpdated" {
+			return false
+		}
+	}
+	return true
+}
+
+func nodeHasFinalizer(n *v1.Node) bool {
+	for _, f := range n.Finalizers {
+		if f == deleteFinalizerName {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeWasDeleted(n *v1.Node) bool {
+	if n.DeletionTimestamp != nil {
+		return true
+	}
+	return false
+}
+
 func (c *Controller) syncNode(key string) error {
 	nobj, exists, err := c.nodeIndexer.GetByKey(key)
 	if err != nil {
@@ -133,7 +178,34 @@ func (c *Controller) syncNode(key string) error {
 	node := nobj.(*v1.Node)
 	glog.V(4).Infof("Processing Node %s\n", node.GetName())
 
-	if node.Annotations[driverDataAnnotationKey] == "" {
+	if !nodeHasFinalizer(node) {
+		node.Finalizers = append(node.Finalizers, deleteFinalizerName)
+		node, err = c.client.Nodes().Update(node)
+		if err != nil {
+			return err
+		}
+		err = c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
+	} else if !machinesIsCreated(node) && !nodeHasNoScheduleTaint(node) {
+		//Add a noSchedule taint so the node does not get evicted before joining
+		//Otherwise Daemonsets would not get deployed
+		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
+			Key:    noExecuteTaintKey,
+			Effect: v1.TaintEffectNoExecute,
+			Value:  "kube-machine",
+		})
+		node, err = c.client.Nodes().Update(node)
+		if err != nil {
+			return err
+		}
+		err = c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
+	} else if !machinesIsCreated(node) {
+		//Create machine
 		mhost, err := c.createNode(node)
 		if err != nil {
 			return fmt.Errorf("failed creating node %q: %v", node.Name, err)
@@ -143,13 +215,50 @@ func (c *Controller) syncNode(key string) error {
 			return err
 		}
 		patchData := []byte(fmt.Sprintf(`
-{"metadata": {"annotations": {"%s": %s}}}"
+	{"metadata": {"annotations": {"%s": %s}}}"
 		`, driverDataAnnotationKey, strconv.Quote(string(data))))
 		node, err = c.client.Nodes().Patch(node.Name, types.StrategicMergePatchType, patchData)
-		c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
+		err = c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
+	} else if machinesIsCreated(node) && nodeHasJoined(node) && nodeHasNoScheduleTaint(node) {
+		//Remove noSchedule taint
+		//TODO: only remove the one taint we created
+		node.Spec.Taints = []v1.Taint{}
+		node, err = c.client.Nodes().Update(node)
+		if err != nil {
+			return err
+		}
+		err = c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
+	} else if nodeWasDeleted(node) && nodeHasFinalizer(node) {
+		err := c.deleteNode(node)
+		if err != nil {
+			return err
+		}
+
+		//TODO: Only remove our finalizer, not all...
+		node.Finalizers = []string{}
+		node, err = c.client.Nodes().Update(node)
+		if err != nil {
+			return err
+		}
+		err = c.nodeIndexer.Update(node)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+func machinesIsCreated(node *v1.Node) bool {
+	return node.Annotations[driverDataAnnotationKey] != ""
 }
 
 // handleErr checks if an error happened and makes sure we will retry later.
