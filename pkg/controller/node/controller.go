@@ -129,7 +129,7 @@ func (c *Controller) createNode(node *v1.Node) (*host.Host, error) {
 	return mhost, nil
 }
 
-func nodeHasNoExecuteTaint(n *v1.Node) bool {
+func nodeHasTaint(n *v1.Node) bool {
 	for _, t := range n.Spec.Taints {
 		if t.Key == noExecuteTaintKey {
 			return true
@@ -139,6 +139,9 @@ func nodeHasNoExecuteTaint(n *v1.Node) bool {
 }
 
 func nodeHasJoined(n *v1.Node) bool {
+	if len(n.Status.Conditions) == 0 {
+		return false
+	}
 	for _, c := range n.Status.Conditions {
 		if c.Reason == "NodeStatusNeverUpdated" {
 			return false
@@ -188,7 +191,7 @@ func (c *Controller) syncNode(key string) error {
 		if err != nil {
 			return err
 		}
-	} else if !machinesIsCreated(node) && !nodeHasNoExecuteTaint(node) {
+	} else if !machinesIsCreated(node) && !nodeHasTaint(node) {
 		//Add a noSchedule taint so the node does not get evicted before joining
 		//Otherwise Daemonsets would not get deployed
 		node.Spec.Taints = append(node.Spec.Taints, v1.Taint{
@@ -225,7 +228,7 @@ func (c *Controller) syncNode(key string) error {
 		if err != nil {
 			return err
 		}
-	} else if machinesIsCreated(node) && nodeHasJoined(node) && nodeHasNoExecuteTaint(node) {
+	} else if machinesIsCreated(node) && nodeHasJoined(node) && nodeHasTaint(node) {
 		//Remove noSchedule taint
 		//TODO: only remove the one taint we created
 		node.Spec.Taints = []v1.Taint{}
