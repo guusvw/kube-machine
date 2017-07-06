@@ -9,6 +9,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/kube-node/kube-machine/pkg/controller/node"
 	"github.com/kube-node/kube-machine/pkg/libmachine"
+	"github.com/kube-node/kube-machine/pkg/nodeclass"
 	"github.com/kube-node/nodeset/pkg/client/clientset_v1alpha1"
 	"github.com/kube-node/nodeset/pkg/nodeset/v1alpha1"
 	flag "github.com/spf13/pflag"
@@ -24,7 +25,8 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-var kubeconfig *string = flag.String("kubeconfig", "", "Path to kubeconfig")
+var kubeconfig *string = flag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
+var master *string = flag.String("master", "", "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 
 func main() {
 	flag.CommandLine.AddGoFlagSet(goflag.CommandLine)
@@ -33,21 +35,19 @@ func main() {
 
 	var config *rest.Config
 	var err error
-	if *kubeconfig != "" {
-		glog.V(6).Infof("Using local kubeconfig located at %q", *kubeconfig)
 
-		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
-		if err != nil {
-			panic(err.Error())
-		}
-	} else {
-		glog.V(6).Info("Using in-cluster config")
-		config, err = rest.InClusterConfig()
-		if err != nil {
-			panic(err.Error())
-		}
+	glog.V(6).Infof("Using local kubeconfig located at %q", *kubeconfig)
+	config, err = clientcmd.BuildConfigFromFlags(*master, *kubeconfig)
+	if err != nil {
+		panic(err.Error())
 	}
+
 	client := kubernetes.NewForConfigOrDie(config)
+	err = nodeclass.EnsureThirdPartyResourcesExist(client)
+	if err != nil {
+		panic(err)
+	}
+
 	config.GroupVersion = &schema.GroupVersion{Version: runtime.APIVersionInternal}
 	nodesetClient := clientset_v1alpha1.NewForConfigOrDie(config)
 
