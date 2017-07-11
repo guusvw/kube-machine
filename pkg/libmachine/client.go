@@ -94,9 +94,10 @@ func (api *Client) Load(node *v1.Node) (*host.Host, error) {
 		return nil, err
 	}
 
-	if h.DriverName == "virtualbox" {
+	switch h.DriverName {
+	case "virtualbox":
 		h.Driver = drivers.NewSerialDriver(d)
-	} else {
+	default:
 		h.Driver = d
 	}
 
