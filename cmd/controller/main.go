@@ -1,7 +1,9 @@
 package main
 
 import (
-	goflag "flag"
+	"flag"
+	"os"
+	"os/signal"
 	"time"
 
 	"github.com/docker/machine/libmachine/log"
@@ -12,7 +14,6 @@ import (
 	"github.com/kube-node/kube-machine/pkg/nodeclass"
 	"github.com/kube-node/nodeset/pkg/client/clientset_v1alpha1"
 	"github.com/kube-node/nodeset/pkg/nodeset/v1alpha1"
-	flag "github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,16 +26,26 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-var kubeconfig *string = flag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
-var master *string = flag.String("master", "", "The address of the Kubernetes API server (overrides any value in kubeconfig)")
+const (
+	workerCnt = 4
+)
+
+var (
+	kubeconfig = flag.String("kubeconfig", "", "Path to kubeconfig file with authorization and master location information.")
+	master     = flag.String("master", "", "The address of the Kubernetes API server (overrides any value in kubeconfig)")
+)
 
 func main() {
-	flag.CommandLine.AddGoFlagSet(goflag.CommandLine)
 	flag.Parse()
 	log.SetDebug(true)
 
-	var config *rest.Config
-	var err error
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, os.Kill)
+
+	var (
+		config *rest.Config
+		err    error
+	)
 
 	glog.V(6).Infof("Using local kubeconfig located at %q", *kubeconfig)
 	config, err = clientcmd.BuildConfigFromFlags(*master, *kubeconfig)
@@ -45,7 +56,7 @@ func main() {
 	client := kubernetes.NewForConfigOrDie(config)
 	err = nodeclass.EnsureThirdPartyResourcesExist(client)
 	if err != nil {
-		panic(err)
+		panic(err.Error())
 	}
 
 	config.GroupVersion = &schema.GroupVersion{Version: runtime.APIVersionInternal}
@@ -121,9 +132,11 @@ func main() {
 		api)
 
 	stop := make(chan struct{})
-	defer close(stop)
-	go controller.Run(4, stop)
+	go controller.Run(workerCnt, stop)
 
-	// Wait forever
-	select {}
+	// Wait forever OR we get  SIGKILL/SIGINT
+	select {
+	case <-c:
+		close(stop)
+	}
 }
