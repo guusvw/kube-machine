@@ -1,5 +1,5 @@
-hash: d3d8f06bf4c2300b2b37c3fbf3a8841cc9dec4e3f8105afff6294cdd9eb4319b
-updated: 2017-05-31T10:09:27.449426952+02:00
+hash: f4d0023c795dc735d521dd8c51f9033a92d1b8399b70e11eab5752476a1713ee
+updated: 2017-06-27T18:48:58.515113959+02:00
 imports:
 - name: github.com/codegangsta/cli
   version: 0302d3914d2a6ad61404584cdae6e6dbc9c03599
@@ -24,10 +24,8 @@ imports:
   - commands/mcndirs
   - drivers/errdriver
   - drivers/none
-  - libmachine
   - libmachine/auth
   - libmachine/cert
-  - libmachine/check
   - libmachine/drivers
   - libmachine/drivers/plugin/localbinary
   - libmachine/drivers/rpc
@@ -39,7 +37,6 @@ imports:
   - libmachine/mcnerror
   - libmachine/mcnflag
   - libmachine/mcnutils
-  - libmachine/persist
   - libmachine/provision
   - libmachine/provision/pkgaction
   - libmachine/provision/serviceaction
@@ -84,7 +81,7 @@ imports:
 - name: github.com/juju/ratelimit
   version: 77ed1c8a01217656d2080ad51981f6e99adaa177
 - name: github.com/kube-node/nodeset
-  version: bfe44a638ca4fcede184412d5f0e344c9b75c5b7
+  version: d81c87e753e7a425607a74167be3551ca43f2a08
   subpackages:
   - pkg/client/clientset_v1alpha1
   - pkg/client/clientset_v1alpha1/scheme
@@ -169,7 +166,7 @@ imports:
 - name: gopkg.in/yaml.v2
   version: 53feefa2559fb8dfa8d81baad31be332c97d6c77
 - name: k8s.io/apimachinery
-  version: 98c470feb44de033f26efb4af98a19f804ffffdc
+  version: 85ace5365f33b16fc735c866a12e3c765b9700f2
   subpackages:
   - pkg/api/errors
   - pkg/api/meta

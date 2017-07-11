@@ -24,6 +24,7 @@ type NodeClassConfig struct {
 type NodeClassProvisionerConfig struct {
 	Files    []NodeClassProvisioningConfigFile `json:"files"`
 	Commands []string                          `json:"commands"`
+	Users    []NodeClassProvisioningUser       `json:"users"`
 }
 
 type NodeClassProvisioningConfigFile struct {
@@ -31,4 +32,9 @@ type NodeClassProvisioningConfigFile struct {
 	Permissions string `json:"permissions"`
 	Owner       string `json:"owner"`
 	Content     string `json:"content"`
+}
+
+type NodeClassProvisioningUser struct {
+	Name    string   `json:"name"`
+	SSHKeys []string `json:"ssh_keys"`
 }

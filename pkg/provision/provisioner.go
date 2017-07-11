@@ -10,6 +10,7 @@ import (
 	"github.com/docker/machine/libmachine/provision"
 	"github.com/golang/glog"
 	"github.com/kube-node/kube-machine/pkg/nodeclass"
+	"strings"
 )
 
 type NodeClassProvisionerWrapper struct {
@@ -35,6 +36,17 @@ func (p *NodeClassProvisionerWrapper) ProvisionConfig(config *nodeclass.NodeClas
 		if err := p.scp([]byte(f.Content), f.Path, f.Permissions, f.Owner); err != nil {
 			return fmt.Errorf("failed to create file %q: %v", f.Path, err)
 		}
+	}
+
+	for _, u := range config.Provisioning.Users {
+		glog.V(6).Infof("Adding user %s...", u.Name)
+		out, err := p.SSHCommand(fmt.Sprintf("sudo useradd --create-home %q", u.Name))
+		glog.V(6).Infof("Output %q", out)
+		if err != nil {
+			return fmt.Errorf("failed to add user %q: %v", u.Name, err)
+		}
+
+		p.scp([]byte(strings.Join(u.SSHKeys, "\n")), fmt.Sprintf("/home/%s/.ssh/authorized_keys", u.Name), "400", u.Name)
 	}
 
 	for _, c := range config.Provisioning.Commands {
@@ -66,8 +78,7 @@ func (p *NodeClassProvisionerWrapper) scp(data []byte, path string, chmod string
 sudo mkdir -p "$(dirname "{{.Path}}")" && \
 sudo touch {{.Path}} && \
 sudo chown {{.Chown}} {{.Path}} && \
-sudo chmod 777 {{.Path}} && \
-echo "{{.Data64}}" | base64 -d >> {{.Path}} && \
+sudo sh -c 'echo "{{.Data64}}" | base64 -d > {{.Path}}' && \
 sudo chmod {{.Chmod}} {{.Path}}`)
 	err := cmdTmpl.Execute(cmd, ctx)
 	if err != nil {
