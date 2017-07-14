@@ -1,5 +1,5 @@
-hash: f4d0023c795dc735d521dd8c51f9033a92d1b8399b70e11eab5752476a1713ee
-updated: 2017-06-27T18:48:58.515113959+02:00
+hash: a8ace1eafe35ee5aa2682fbb549abfa312a0a9e9b70484a621fc88e80784f86a
+updated: 2017-07-14T16:59:11.518694573+02:00
 imports:
 - name: github.com/codegangsta/cli
   version: 0302d3914d2a6ad61404584cdae6e6dbc9c03599
@@ -19,7 +19,8 @@ imports:
 - name: github.com/docker/go-units
   version: 0bbddae09c5a5419a8c6dcdd7ff90da3d450393b
 - name: github.com/docker/machine
-  version: 5b274558ea6ca822c06dd407a4e774a0105c3f60
+  version: fcfbd11c80e43077f44cd8c1204940cc2f1d8d3f
+  repo: git@github.com:guusvw/machine.git
   subpackages:
   - commands/mcndirs
   - drivers/errdriver
@@ -106,9 +107,12 @@ imports:
   subpackages:
   - codec
 - name: golang.org/x/crypto
-  version: beef0f4390813b96e8e68fd78570396d0f4751fc
+  version: 51714a8c4ac1764f07ab4127d7f739351ced4759
+  repo: git@github.com:guusvw/crypto.git
   subpackages:
   - curve25519
+  - ed25519
+  - ed25519/internal/edwards25519
   - ssh
   - ssh/terminal
 - name: golang.org/x/net
